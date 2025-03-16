@@ -1,0 +1,72 @@
+import vt
+import pandas as pd
+import time
+
+VT_API_KEY = "-"  # API key 
+HASHES_FILE = "hashes.xlsx"
+
+# Extract hashes from the Excel file 
+def load_hashes(file_path):
+    try:
+        df = pd.read_excel(file_path)
+        hash_values = df.iloc[3:, 2].dropna().astype(str).tolist()
+        return [h for h in hash_values if len(h) in [32, 40, 64]] 
+    except FileNotFoundError:
+        print(f"Error: File '{file_path}' not found.")
+        return []
+    except Exception as err:
+        print(f"Error loading hashes: {err}")
+        return []
+hash_entries = load_hashes(HASHES_FILE)
+analysis_data = []
+
+# Connect to VirusTotal API and store data
+with vt.Client(VT_API_KEY) as vt_session:
+    for idx, hash_value in enumerate(hash_entries, start=2):
+        print(f"Scanning: {hash_value}")
+
+        try:
+            vt_response = vt_session.get_object(f"/files/{hash_value}")
+            threat_count = vt_response.last_analysis_stats.get("malicious", 0)
+            file_created = getattr(vt_response, "Creation_Time", "Missing")
+            sig_date = getattr(vt_response, "Signature_Date", "Missing")
+            first_appearance = getattr(vt_response, "First_Seen_in_the_Wild", "Missing")  
+            names = vt_response.names if hasattr(vt_response, "names") else []
+            name1, name2, name3 = (names + ["null", "null", "null"])[:3]   
+            scan_result = {
+                "Detection_Count": threat_count,
+                "Hash_MD5": vt_response.md5,
+                "Hash_SHA1": vt_response.sha1,
+                "Hash_SHA256": vt_response.sha256,
+                "File_Type": vt_response.type_description,
+                "File_Magic": vt_response.magic,
+                "Creation_Time": file_created,
+                "Signature_Date": sig_date,
+                "First_Seen_in_the_Wild": first_appearance,
+                "First_Submission": vt_response.first_submission_date,
+                "Last_Submission": vt_response.last_submission_date,
+                "Last_Analysis": vt_response.last_analysis_date,
+                "Name1": name1,
+                "Name2": name2,
+                "Name3": name3,
+                "Verdict": "Malicious" if threat_count > 0 else "Benign",
+            }
+
+        # Handle errors
+        except vt.error.APIError as api_err:
+            print(f"API Error for {hash_value}: {api_err}")
+            scan_result = {"Hash": hash_value, "Detection_Count": "N/A"}
+        except Exception as err:
+            print(f"Unexpected Error: {err}")
+            scan_result = {"Hash": hash_value, "Detection_Count": "N/A"}
+        # Save results
+        analysis_data.append(scan_result)
+        if idx % 2 == 0 or idx == len(hash_entries):
+            df_results = pd.DataFrame(analysis_data)
+            df_results.to_excel("FinalResults.xlsx", index=False)
+            print("Progress saved to FinalResults.xlsx")
+        # Delay for API rate limits
+        print(f"Processed hash {idx}: {hash_value}")
+        time.sleep(15)
+
+print("\nScan completed. Results stored in FinalResults.xlsx")
